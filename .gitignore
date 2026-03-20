@@ -1,0 +1,19 @@
+# 证书（敏感文件，不提交）
+signaling-server/path/to/*.pem
+signaling-server/path/to/*-key.pem
+
+# 运行时目录
+coturn/log/
+coturn/run/
+coturn/turndb/
+
+# Node
+signaling-server/node_modules/
+signaling-server/pnpm-lock.yaml
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

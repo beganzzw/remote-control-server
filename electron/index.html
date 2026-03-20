@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 无 unsafe-eval；信令/WebSocket 与屏幕流见 connect-src / media-src -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https: wss: http: ws:; media-src 'self' blob: data:;">
+    <title>Remote Control Demo</title>
+    <link rel="stylesheet" href="index.css">
+</head>
+<body>
+    <span id="tip">未进行远程</span>
+    <div class="row">
+        <input id="server-url" type="text" spellcheck="false" value="https://10.10.10.130:8080" />
+        <button id="connect-server">连接</button>
+        <button id="end-control">关闭远程</button>
+    </div>
+</body>
+</html>

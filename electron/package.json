@@ -1,0 +1,67 @@
+{
+  "name": "remote-electron",
+  "version": "1.0.1",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "dist-mac": "rm -rf dist &&  electron-builder --mac --dir=outMac",
+    "dist-win": "rm -rf dist &&  electron-builder --win --x64"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^29.1.0",
+    "electron-log": "4.4.7",
+    "electron-builder": "^24.13.3",
+    "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "productName": "远程",
+    "appId": "remote",
+    "asar": false,
+    "compression": "store",
+    "dmg": {
+      "icon": "img/512x512px.png",
+      "iconSize": 100,
+      "contents": [
+        {
+          "x": 410,
+          "y": 150,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 130,
+          "y": 150,
+          "type": "file"
+        }
+      ]
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "http://resource.doudoubot.cn/download/assistant/mac"
+      }
+    ],
+    "mac": {
+      "icon": "img/512x512px.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true
+    }
+  },
+  "files": [
+    "!node_modules"
+  ],
+  "dependencies": {
+    "@jitsi/robotjs": "^0.6.13",
+    "socket.io-client": "^4.7.4"
+  }
+}
