@@ -1,6 +1,11 @@
 // 控制端（Client）处理模块
 const { v4: uuidv4 } = require('uuid')
 
+const CONNECT_HOST_TIMEOUT_MS = (() => {
+  const n = Number(process.env.CONNECT_HOST_TIMEOUT_MS)
+  return Number.isFinite(n) && n > 0 ? n : 30000
+})()
+
 class ClientHandler {
   constructor(io, sessionManager, availableHosts) {
     this.io = io
@@ -62,7 +67,7 @@ class ClientHandler {
 
       console.log(`[控制端] ${socket.id} 请求连接被控端 ${hostId}（sessionId: ${sessionId}）`)
 
-      // 10 秒超时未响应则重置
+      // 被控端未 accept-connection 则超时（默认 30s，可用 CONNECT_HOST_TIMEOUT_MS 配置）
       const timeoutTimer = setTimeout(() => {
         const currentHost = this.availableHosts.get(hostId)
         if (
@@ -75,9 +80,11 @@ class ClientHandler {
           this.availableHosts.set(hostId, currentHost)
           this.broadcastAvailableHosts()
           socket.emit('error', { message: '连接超时，被控端未响应' })
-          console.log(`[控制端] 连接 ${hostId} 超时（10秒）`)
+          console.log(
+            `[控制端] 连接 ${hostId} 超时（${CONNECT_HOST_TIMEOUT_MS}ms）`
+          )
         }
-      }, 10000)
+      }, CONNECT_HOST_TIMEOUT_MS)
 
       socket._connectTimeoutTimers = socket._connectTimeoutTimers || new Map()
       // 清理旧的同目标计时器

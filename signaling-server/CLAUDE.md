@@ -68,7 +68,7 @@ remote-control/
 3. **ClientHandler** (`core/client-handler.js`)
    - 处理控制端连接请求
    - 提供可用被控端列表查询
-   - 管理 10 秒连接超时（注意每次请求前清理旧计时器）
+   - 管理被控端 `accept-connection` 超时（默认 30s，环境变量 `CONNECT_HOST_TIMEOUT_MS`；每次请求前清理同 host 旧计时器）
 
 4. **SignalingHandler** (`core/signaling-handler.js`)
    - 转发 WebRTC offer/answer/ice-candidate

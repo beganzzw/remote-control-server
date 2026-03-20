@@ -5,22 +5,30 @@
   "main": "main.js",
   "scripts": {
     "dev": "electron .",
-    "dist-mac": "rm -rf dist &&  electron-builder --mac --dir=outMac",
-    "dist-win": "rm -rf dist &&  electron-builder --win --x64"
+    "postinstall": "electron-builder install-app-deps",
+    "dist-mac": "rimraf dist && electron-builder --mac --dir=outMac",
+    "dist-win": "rimraf dist && electron-builder --win --x64"
   },
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "electron": "^29.1.0",
-    "electron-log": "4.4.7",
     "electron-builder": "^24.13.3",
-    "electron-rebuild": "^3.2.9"
+    "rimraf": "^5.0.5"
   },
   "build": {
     "productName": "远程",
     "appId": "remote",
     "asar": false,
     "compression": "store",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist",
+      "!outMac"
+    ],
     "dmg": {
       "icon": "img/512x512px.png",
       "iconSize": 100,
@@ -51,17 +59,22 @@
         "zip"
       ]
     },
+    "win": {
+      "icon": "img/512x512px.png",
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
     "nsis": {
       "oneClick": false,
       "perMachine": true,
       "allowElevation": true
     }
   },
-  "files": [
-    "!node_modules"
-  ],
   "dependencies": {
     "@jitsi/robotjs": "^0.6.13",
+    "electron-log": "4.4.7",
     "socket.io-client": "^4.7.4"
   }
 }

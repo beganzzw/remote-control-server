@@ -3,9 +3,10 @@ version: '3'
 networks:
   turn_net:
     driver: bridge
+    # 若报 Pool overlaps：与本机其它 Docker 网络冲突，请整体改 subnet 并同步 coturn 里 external-ip/relay-ip 的内网段
     ipam:
       config:
-        - subnet: 172.21.0.0/24
+        - subnet: 172.30.42.0/24
 
 services:
 
@@ -16,11 +17,12 @@ services:
     user: root
     networks:
       turn_net:
-        ipv4_address: 172.21.0.2
+        ipv4_address: 172.30.42.2
     ports:
       - "3478:3478/tcp"
       - "3478:3478/udp"
       - "50000-50100:50000-50100/udp"
+      - "50000-50100:50000-50100/tcp"
     volumes:
       - ./coturn/config/turnserver.conf:/etc/turnserver.conf
       - ./coturn/turndb:/var/lib/turn/turndb
@@ -33,7 +35,7 @@ services:
     restart: unless-stopped
     networks:
       turn_net:
-        ipv4_address: 172.21.0.3
+        ipv4_address: 172.30.42.3
     ports:
       - "8080:8080"
     volumes:

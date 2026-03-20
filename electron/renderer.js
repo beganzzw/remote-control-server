@@ -6,13 +6,7 @@ const { SIGNALING_SERVER_URL } = require("./signaling-config");
 const PEERCONFIG = {
   iceServers: [
     {
-      urls: ["stun:stun1.l.google.com:19302"],
-    },
-    {
-      urls: [
-        "turn:10.10.10.130:3478",
-        "turn:10.10.10.130:3478?transport=tcp",
-      ],
+      urls: ["turn:10.10.10.130:3478?transport=tcp"],
       username: "user",
       credential: "password",
     },
@@ -28,6 +22,10 @@ let socketHandlers = null;
 let isInSession = false;
 let currentSessionId = null;
 let currentClientId = null;
+
+// 日志节流：避免 mousemove 高频刷屏
+let lastRendererMouseMoveLogAt = 0;
+const RENDERER_MOUSE_MOVE_LOG_THROTTLE_MS = 200;
 
 const DEFAULT_SERVER_URL = SIGNALING_SERVER_URL;
 let currentServerUrl = DEFAULT_SERVER_URL;
@@ -119,7 +117,7 @@ function detachSocketHandlers() {
 
 // ── Socket 连接管理 ───────────────────────────────────────────
 
-function connectSocket(serverUrl) {
+async function connectSocket(serverUrl) {
   const normalized = normalizeServerUrl(serverUrl);
   if (!normalized) {
     setTip("服务器地址无效");
@@ -141,10 +139,21 @@ function connectSocket(serverUrl) {
   }
 
   currentServerUrl = normalized;
+  try {
+    const host = new URL(normalized).hostname;
+    await ipcRenderer.invoke("signaling-allow-host", host);
+  } catch (e) {
+    console.log("[socket] signaling-allow-host ipc failed", e);
+  }
+
+  // nodeIntegration 开启时，engine.io 的 polling/websocket 走 Node 的 https/tls，不走 Chromium；
+  // 自签证书须 rejectUnauthorized: false（与主进程 setCertificateVerifyProc 无关）。生产环境请换正式证书并移除此项。
   socket = io(currentServerUrl, {
-    transports: ["websocket", "polling"],
+    transports: ["polling", "websocket"],
+    upgrade: true,
+    rememberUpgrade: false,
+    timeout: 25_000,
     autoConnect: true,
-    // 内网自签名证书时需跳过 TLS 验证（生产环境使用正式证书后移除）
     rejectUnauthorized: false,
   });
 
@@ -160,6 +169,8 @@ function connectSocket(serverUrl) {
       } catch (e) {
         console.log("[socket] register-host failed", e);
       }
+      // 注册被控端信令（connection-request 等），否则仅 register-host 上线无法控制端 accept
+      attachHostSignalingHandlers();
     },
     disconnect: (reason) => {
       console.log("[socket] disconnect", reason);
@@ -167,8 +178,18 @@ function connectSocket(serverUrl) {
     },
     connect_error: (err) => {
       const msg = err && err.message ? err.message : String(err);
-      console.log("[socket] connect_error", msg);
-      if (!isInSession) setTip(`连接失败：${currentServerUrl}（${msg}）`);
+      const extra =
+        err && (err.description || err.context || err.data)
+          ? ` ${JSON.stringify(err.description || err.context || err.data)}`
+          : "";
+      console.log("[socket] connect_error", msg, extra, err);
+      if (!isInSession) {
+        const hint =
+          /xhr poll error|websocket/i.test(msg) && /^https:/i.test(currentServerUrl)
+            ? "（请确认 https 地址正确；服务端若为 HTTP 请改用 http://）"
+            : "";
+        setTip(`连接失败：${currentServerUrl}（${msg}）${hint}`);
+      }
     },
   };
 
@@ -239,6 +260,11 @@ function cleanup(reason) {
   setTip("未进行远程");
   updateServerInputState();
   notifySessionEnded(reason);
+
+  // 信令仍在线时重新挂上被控端监听，便于下一通远控（否则 cleanup 会 off 掉永无 accept）
+  if (socket && socket.connected) {
+    attachHostSignalingHandlers();
+  }
 }
 
 function ensurePeer() {
@@ -255,15 +281,40 @@ function ensurePeer() {
         const eventData = JSON.parse(e.data);
         const type = eventData.type;
         if (type === "scroll") {
-          ipcRenderer.send("scroll", { x: eventData.x, y: eventData.y });
+          // 前端发送字段为 deltaX/deltaY，这里兼容 x/y（历史）
+          const x = eventData.deltaX ?? eventData.x ?? 0;
+          const y = eventData.deltaY ?? eventData.y ?? 0;
+          ipcRenderer.send("scroll", { x, y });
         } else if (type === "mousemove") {
+          const now = Date.now();
+          if (now - lastRendererMouseMoveLogAt >= RENDERER_MOUSE_MOVE_LOG_THROTTLE_MS) {
+            lastRendererMouseMoveLogAt = now;
+            console.log('[mouse] renderer mousemove', {
+              input: { x: eventData.x, y: eventData.y },
+              normalizedGuess:
+                Number(eventData.x) >= 0 &&
+                Number(eventData.x) <= 1 &&
+                Number(eventData.y) >= 0 &&
+                Number(eventData.y) <= 1,
+            });
+          }
           ipcRenderer.send("mousemove", { x: eventData.x, y: eventData.y });
         } else if (type === "keydown") {
           ipcRenderer.send("keydown", { key: eventData.key });
         } else if (type === "mousedown") {
-          ipcRenderer.send("mousedown", { key: eventData.key });
+          console.log('[mouse] renderer mousedown', {
+            raw: { button: eventData.button, key: eventData.key },
+          });
+          ipcRenderer.send("mousedown", {
+            button: eventData.button ?? eventData.key ?? "left",
+          });
         } else if (type === "mouseup") {
-          ipcRenderer.send("mouseup", { key: eventData.key });
+          console.log('[mouse] renderer mouseup', {
+            raw: { button: eventData.button, key: eventData.key },
+          });
+          ipcRenderer.send("mouseup", {
+            button: eventData.button ?? eventData.key ?? "left",
+          });
         } else if (type === "copy") {
           ipcRenderer.send("copy", { key: eventData.key });
         } else if (type === "paste") {
@@ -323,18 +374,141 @@ function ensurePeer() {
   return peer;
 }
 
-// ── 主流程：接收屏幕源并建立会话 ────────────────────────────
+// ── 桌面采集 + 与 connection-request / offer 共用 ─────────────
+
+async function acquireDesktopMediaStream(desktopSourceId) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: "desktop",
+        chromeMediaSourceId: desktopSourceId,
+        minWidth: 1280,
+        maxWidth: 1280,
+        minHeight: 720,
+        maxHeight: 720,
+      },
+    },
+  });
+  currentStream = stream;
+  ensurePeer();
+}
+
+async function handleIncomingConnectionRequest(data) {
+  console.log("[signal] connection-request", data);
+  if (!socket) return;
+  const requesterId = data && data.requesterId;
+  const sid = data && data.sessionId;
+  if (!requesterId || !sid) return;
+
+  currentClientId = requesterId;
+  currentSessionId = sid;
+  isInSession = true;
+  updateServerInputState();
+
+  if (!currentStream) {
+    setTip("正在获取屏幕...");
+    try {
+      const res = await ipcRenderer.invoke("get-default-desktop-source");
+      await acquireDesktopMediaStream(res.id);
+    } catch (e) {
+      log.warn("[signal] desktop capture failed", e);
+      setTip(`获取屏幕失败：${e.message || e}`);
+      isInSession = false;
+      updateServerInputState();
+      currentClientId = null;
+      currentSessionId = null;
+      return;
+    }
+  }
+
+  socket.emit("accept-connection", {
+    targetId: currentClientId,
+    sessionId: currentSessionId,
+  });
+  setTip("已接受连接，等待 offer...");
+}
+
+function attachHostSignalingHandlers() {
+  if (!socket) return;
+  detachSocketHandlers();
+
+  socketHandlers = {
+    connectionRequest: (data) => {
+      void handleIncomingConnectionRequest(data).catch((e) => {
+        log.warn("[signal] connection-request handler error", e);
+      });
+    },
+
+    offer: async (data) => {
+      console.log("[signal] offer received", data && data.sessionId);
+      if (!data || !data.offer) return;
+      const peer = ensurePeer();
+      currentClientId = data.sourceId || currentClientId;
+      currentSessionId = data.sessionId || currentSessionId;
+      if (!currentClientId || !currentSessionId) return;
+
+      try {
+        await peer.setRemoteDescription(data.offer);
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        if (!socket) return;
+        socket.emit("answer", {
+          targetId: currentClientId,
+          answer,
+          sessionId: currentSessionId,
+        });
+        setTip("已发送 answer，建立中...");
+      } catch (e) {
+        log.warn("[signal] handle offer error", e);
+      }
+    },
+
+    iceCandidate: async (data) => {
+      if (!data || !data.candidate) return;
+      const peer = currentPeer || ensurePeer();
+      try {
+        await peer.addIceCandidate(data.candidate);
+      } catch (e) {
+        log.warn("[signal] addIceCandidate error", e);
+      }
+    },
+
+    sessionClosed: (data) => {
+      console.log("[signal] session-closed", data);
+      cleanup("session-closed");
+    },
+
+    clientDisconnected: (data) => {
+      console.log("[signal] client-disconnected", data);
+      cleanup("client-disconnected");
+    },
+
+    clientOffline: (data) => {
+      console.log("[signal] client-offline", data);
+      cleanup("client-offline");
+    },
+  };
+
+  socket.on("connection-request", socketHandlers.connectionRequest);
+  socket.on("offer", socketHandlers.offer);
+  socket.on("ice-candidate", socketHandlers.iceCandidate);
+  socket.on("session-closed", socketHandlers.sessionClosed);
+  socket.on("client-disconnected", socketHandlers.clientDisconnected);
+  socket.on("client-offline", socketHandlers.clientOffline);
+}
+
+// ── remote:// 等入口：与「仅连信令」共用同一套采集与信令逻辑 ───
 
 ipcRenderer.on("SET_SOURCE", async (event, { id, ...params }) => {
   console.log("[SET_SOURCE]", params);
   try {
     cleanup("replaced-by-new-session");
     currentParams = params;
-    conversationId = params.conversationId;
+    conversationId = params.conversationId || "";
     isInSession = true;
     updateServerInputState();
 
-    // 等待 socket 就绪
     try {
       setTip("正在连接服务器...");
       await ensureSocketConnected(5000);
@@ -351,99 +525,7 @@ ipcRenderer.on("SET_SOURCE", async (event, { id, ...params }) => {
       return;
     }
 
-    // 捕获屏幕
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: "desktop",
-          chromeMediaSourceId: id,
-          minWidth: 1280,
-          maxWidth: 1280,
-          minHeight: 720,
-          maxHeight: 720,
-        },
-      },
-    });
-    currentStream = stream;
-    ensurePeer();
-
-    // 注册信令事件
-    socketHandlers = {
-      connectionRequest: (data) => {
-        console.log("[signal] connection-request", data);
-        if (!socket) return;
-        currentClientId = data && data.requesterId ? data.requesterId : null;
-        currentSessionId = data && data.sessionId ? data.sessionId : null;
-        if (!currentClientId || !currentSessionId) return;
-
-        socket.emit("accept-connection", {
-          targetId: currentClientId,
-          sessionId: currentSessionId,
-        });
-        setTip("已接受连接，等待 offer...");
-      },
-
-      offer: async (data) => {
-        console.log("[signal] offer received", data && data.sessionId);
-        if (!data || !data.offer) return;
-        const peer = ensurePeer();
-        currentClientId = data.sourceId || currentClientId;
-        currentSessionId = data.sessionId || currentSessionId;
-        if (!currentClientId || !currentSessionId) return;
-
-        try {
-          await peer.setRemoteDescription(data.offer);
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          if (!socket) return;
-          socket.emit("answer", {
-            targetId: currentClientId,
-            answer,
-            sessionId: currentSessionId,
-          });
-          setTip("已发送 answer，建立中...");
-        } catch (e) {
-          log.warn("[signal] handle offer error", e);
-        }
-      },
-
-      iceCandidate: async (data) => {
-        if (!data || !data.candidate) return;
-        const peer = currentPeer || ensurePeer();
-        try {
-          await peer.addIceCandidate(data.candidate);
-        } catch (e) {
-          log.warn("[signal] addIceCandidate error", e);
-        }
-      },
-
-      sessionClosed: (data) => {
-        console.log("[signal] session-closed", data);
-        cleanup("session-closed");
-      },
-
-      clientDisconnected: (data) => {
-        console.log("[signal] client-disconnected", data);
-        cleanup("client-disconnected");
-      },
-
-      // 修复：处理控制端异常掉线（服务端发送 client-offline）
-      clientOffline: (data) => {
-        console.log("[signal] client-offline", data);
-        cleanup("client-offline");
-      },
-    };
-
-    if (socket) {
-      socket.on("connection-request", socketHandlers.connectionRequest);
-      socket.on("offer", socketHandlers.offer);
-      socket.on("ice-candidate", socketHandlers.iceCandidate);
-      socket.on("session-closed", socketHandlers.sessionClosed);
-      socket.on("client-disconnected", socketHandlers.clientDisconnected);
-      socket.on("client-offline", socketHandlers.clientOffline);
-    }
-
+    await acquireDesktopMediaStream(id);
     setTip("已就绪，等待控制端连接...");
   } catch (e) {
     console.log("[SET_SOURCE] error", e.message);
@@ -458,9 +540,9 @@ window.addEventListener("DOMContentLoaded", () => {
   const connectBtn = getConnectServerBtnEl();
 
   if (input) input.value = DEFAULT_SERVER_URL;
-  connectSocket(DEFAULT_SERVER_URL);
+  void connectSocket(DEFAULT_SERVER_URL);
 
-  const doConnectFromInput = () => {
+  const doConnectFromInput = async () => {
     if (isInSession) {
       setTip("远程中不可切换服务器");
       updateServerInputState();
@@ -472,16 +554,16 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     setTip("正在连接服务器...");
-    connectSocket(url);
+    await connectSocket(url);
   };
 
   if (connectBtn) {
-    connectBtn.addEventListener("click", () => doConnectFromInput());
+    connectBtn.addEventListener("click", () => void doConnectFromInput());
   }
 
   if (input) {
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") doConnectFromInput();
+      if (e.key === "Enter") void doConnectFromInput();
     });
   }
 
