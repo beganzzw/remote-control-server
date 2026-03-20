@@ -65,12 +65,12 @@ function updateServerInputState() {
   if (btn) btn.disabled = !!isInSession;
 }
 
-// ── URL 校验（支持 http / https）────────────────────────────
+// ── URL 校验（支持 http / https，自动补全协议头）────────────
 
 function normalizeServerUrl(raw) {
   let v = (raw || "").trim();
   if (!v) return null;
-  // 自动补全协议头
+  // 自动补全协议头，方便用户直接输入 IP:PORT
   if (!/^https?:\/\//i.test(v)) v = "https://" + v;
   return v.replace(/\/+$/, "");
 }
@@ -131,7 +131,7 @@ function connectSocket(serverUrl) {
     return false;
   }
 
-  // 先清理旧连接
+  // 先清理旧连接，避免重复监听器
   try {
     detachSocketHandlers();
     detachBaseSocketHandlers();
@@ -144,13 +144,13 @@ function connectSocket(serverUrl) {
   socket = io(currentServerUrl, {
     transports: ["websocket", "polling"],
     autoConnect: true,
-    // 内网自签证书时需跳过验证（生产环境使用正式证书后移除）
+    // 内网自签名证书时需跳过 TLS 验证（生产环境使用正式证书后移除）
     rejectUnauthorized: false,
   });
 
   baseSocketHandlers = {
     error: (err) => {
-      console.log("socket error", err);
+      console.log("[socket] error", err);
     },
     connect: () => {
       console.log("[socket] connected", currentServerUrl);
@@ -158,7 +158,7 @@ function connectSocket(serverUrl) {
       try {
         socket.emit("register-host", { hostName: getHostName() });
       } catch (e) {
-        console.log("register-host failed", e);
+        console.log("[socket] register-host failed", e);
       }
     },
     disconnect: (reason) => {
@@ -194,7 +194,6 @@ function ensureSocketConnected(timeoutMs = 5000) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      // 摘除临时监听器
       try { socket.off("connect", onConnect); } catch (_) {}
       try { socket.off("connect_error", onError); } catch (_) {}
       fn();
@@ -211,7 +210,6 @@ function ensureSocketConnected(timeoutMs = 5000) {
     socket.once("connect", onConnect);
     socket.once("connect_error", onError);
 
-    // 若 socket 处于非活跃状态则主动触发
     if (!socket.active) {
       try { socket.connect(); } catch (_) {}
     }
@@ -430,7 +428,7 @@ ipcRenderer.on("SET_SOURCE", async (event, { id, ...params }) => {
         cleanup("client-disconnected");
       },
 
-      // 修复：新增 client-offline 事件处理（与 client-disconnected 语义一致）
+      // 修复：处理控制端异常掉线（服务端发送 client-offline）
       clientOffline: (data) => {
         console.log("[signal] client-offline", data);
         cleanup("client-offline");
