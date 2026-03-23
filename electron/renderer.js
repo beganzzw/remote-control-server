@@ -377,19 +377,28 @@ function ensurePeer() {
 // ── 桌面采集 + 与 connection-request / offer 共用 ─────────────
 
 async function acquireDesktopMediaStream(desktopSourceId) {
+  const { width, height } = await ipcRenderer.invoke("get-screen-size");
+
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
       mandatory: {
         chromeMediaSource: "desktop",
         chromeMediaSourceId: desktopSourceId,
-        minWidth: 1280,
-        maxWidth: 1280,
-        minHeight: 720,
-        maxHeight: 720,
+        minWidth: width,
+        maxWidth: width,
+        minHeight: height,
+        maxHeight: height,
+        minFrameRate: 15,
+        maxFrameRate: 15,
       },
     },
   });
+
+  const videoTrack = stream.getVideoTracks()[0];
+  if (videoTrack) {
+    videoTrack.contentHint = "detail"
+  }
   currentStream = stream;
   ensurePeer();
 }
@@ -441,18 +450,39 @@ function attachHostSignalingHandlers() {
     },
 
     offer: async (data) => {
-      console.log("[signal] offer received", data && data.sessionId);
       if (!data || !data.offer) return;
       const peer = ensurePeer();
       currentClientId = data.sourceId || currentClientId;
       currentSessionId = data.sessionId || currentSessionId;
       if (!currentClientId || !currentSessionId) return;
-
+    
       try {
         await peer.setRemoteDescription(data.offer);
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
-        if (!socket) return;
+    
+        // ── 提高视频编码码率 ──────────────────────────────
+        const senders = peer.getSenders();
+        for (const sender of senders) {
+          if (!sender.track || sender.track.kind !== "video") continue;
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          for (const enc of params.encodings) {
+            enc.maxBitrate = 4_000_000;   // 8 Mbps，局域网足够
+            enc.maxFramerate = 15;
+            enc.priority = "high";
+            enc.networkPriority = "high";
+          }
+          try {
+            await sender.setParameters(params);
+          } catch (e) {
+            console.log("[peer] setParameters failed", e);
+          }
+        }
+        // ─────────────────────────────────────────────────
+    
         socket.emit("answer", {
           targetId: currentClientId,
           answer,
