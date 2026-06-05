@@ -1,7 +1,13 @@
 const { ipcRenderer } = require("electron");
 const io = require("socket.io-client");
 const log = require("electron-log");
-const { SIGNALING_SERVER_URL } = require("./signaling-config");
+const {
+  SIGNALING_SERVER_URL,
+  SYSTEM_NAME,
+  HOST_IP,
+  HOST_IP_INTERFACE_NAME,
+} = require("./signaling-config");
+const { resolveHostIp } = require("./host-network");
 
 const PEERCONFIG = {
   iceServers: [
@@ -54,6 +60,27 @@ function getHostName() {
   } catch (_) {
     return "electron-host";
   }
+}
+
+function getSystemName() {
+  const configured = (SYSTEM_NAME || "").trim();
+  if (configured) return configured;
+  return getHostName();
+}
+
+function getHostRegistrationPayload() {
+  const hostName = getHostName();
+  const hostIp = resolveHostIp({
+    hostIp: HOST_IP,
+    interfaceName: HOST_IP_INTERFACE_NAME,
+  });
+  const payload = {
+    hostName,
+    systemName: getSystemName(),
+    capabilities: ["mouse", "keyboard", "screen"],
+  };
+  if (hostIp) payload.hostIp = hostIp;
+  return payload;
 }
 
 function updateServerInputState() {
@@ -165,7 +192,7 @@ async function connectSocket(serverUrl) {
       console.log("[socket] connected", currentServerUrl);
       if (!isInSession) setTip(`已连接：${currentServerUrl}`);
       try {
-        socket.emit("register-host", { hostName: getHostName() });
+        socket.emit("register-host", getHostRegistrationPayload());
       } catch (e) {
         console.log("[socket] register-host failed", e);
       }

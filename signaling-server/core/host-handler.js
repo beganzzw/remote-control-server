@@ -1,4 +1,6 @@
 // 被控端（Host）处理模块
+const { mapAllHostsList } = require('./host-list-mapper')
+
 class HostHandler {
   constructor(io, sessionManager, availableHosts) {
     this.io = io
@@ -29,16 +31,21 @@ class HostHandler {
         return socket.emit('error', { message: '无效的被控端信息（缺少名称）' })
       }
 
+      const now = new Date()
+      const existing = this.availableHosts.get(socket.id)
       const hostData = {
         hostId: socket.id,
         hostName: hostInfo.hostName,
+        systemName: hostInfo.systemName || hostInfo.hostName,
+        hostIp: hostInfo.hostIp || undefined,
         slaveId: hostInfo.slaveId || socket.id,
         capabilities: hostInfo.capabilities || [],
         displayId: hostInfo.displayId || 'default',
         connectionStatus: 'available',
-        connectingClientId: null,   // ✅ 修复：必须初始化，否则 accept 校验永远失败
+        connectingClientId: null,
         isAvailable: true,
-        registeredAt: new Date(),
+        registeredAt: existing?.registeredAt || now,
+        lastSeenAt: now,
       }
 
       this.availableHosts.set(socket.id, hostData)
@@ -85,6 +92,7 @@ class HostHandler {
       this.io.to(clientId).emit('connection-accepted', {
         hostId: socket.id,
         hostName: host.hostName,
+        systemName: host.systemName || host.hostName,
         sessionId,
         slaveId: host.slaveId,
       })
@@ -175,18 +183,10 @@ class HostHandler {
     }
   }
 
-  // 广播可用被控端列表
   broadcastAvailableHosts() {
-    const list = Array.from(this.availableHosts.values()).map((host) => ({
-      hostId: host.hostId,
-      hostName: host.hostName,
-      capabilities: host.capabilities,
-      slaveId: host.slaveId,
-      connectionStatus: host.connectionStatus,
-    }))
-
+    const list = mapAllHostsList(this.availableHosts)
     this.io.emit('available-hosts-list', list)
-    console.log(`[被控端] 广播可用列表（共 ${list.length} 个）`)
+    console.log(`[被控端] 广播主机列表（共 ${list.length} 个）`)
   }
 }
 

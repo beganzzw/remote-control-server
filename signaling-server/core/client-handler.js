@@ -1,5 +1,6 @@
 // 控制端（Client）处理模块
 const { v4: uuidv4 } = require('uuid')
+const { mapAllHostsList } = require('./host-list-mapper')
 
 const CONNECT_HOST_TIMEOUT_MS = (() => {
   const n = Number(process.env.CONNECT_HOST_TIMEOUT_MS)
@@ -28,17 +29,9 @@ class ClientHandler {
 
   // 向控制端发送可用被控端列表
   sendAvailableHosts(socket) {
-    const availableList = Array.from(this.availableHosts.values())
-      .filter((host) => host.isAvailable)
-      .map((host) => ({
-        hostId: host.hostId,
-        hostName: host.hostName,
-        capabilities: host.capabilities,
-        slaveId: host.slaveId,
-      }))
-
-    socket.emit('available-hosts-list', availableList)
-    console.log(`[控制端] 向 ${socket.id} 发送可用被控端列表（共 ${availableList.length} 个）`)
+    const list = mapAllHostsList(this.availableHosts)
+    socket.emit('available-hosts-list', list)
+    console.log(`[控制端] 向 ${socket.id} 发送主机列表（共 ${list.length} 个）`)
   }
 
   // 处理控制端连接被控端请求
@@ -51,8 +44,8 @@ class ClientHandler {
         })
       }
 
-      // 标记为连接中
       host.connectionStatus = 'connecting'
+      host.isAvailable = false
       host.connectingClientId = socket.id
       this.availableHosts.set(hostId, host)
       this.broadcastAvailableHosts()
@@ -76,6 +69,7 @@ class ClientHandler {
           currentHost.connectingClientId === socket.id
         ) {
           currentHost.connectionStatus = 'available'
+          currentHost.isAvailable = true
           currentHost.connectingClientId = null
           this.availableHosts.set(hostId, currentHost)
           this.broadcastAvailableHosts()
@@ -162,15 +156,7 @@ class ClientHandler {
 
   // 广播可用被控端列表
   broadcastAvailableHosts() {
-    const list = Array.from(this.availableHosts.values())
-      .filter((host) => host.isAvailable)
-      .map((host) => ({
-        hostId: host.hostId,
-        hostName: host.hostName,
-        capabilities: host.capabilities,
-        slaveId: host.slaveId,
-      }))
-
+    const list = mapAllHostsList(this.availableHosts)
     this.io.emit('available-hosts-list', list)
   }
 }

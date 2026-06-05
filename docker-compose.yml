@@ -1,47 +1,13 @@
-version: '3'
+# 已废弃：信令与 TURN 请在独立项目中启动
+#
+#   cd ../signaling-server
+#   docker compose up -d --build
+#
+#   cd ../turnserver
+#   docker compose up -d
+#
+# 历史一体编排见 docker-compose.legacy.yml
 
-networks:
-  turn_net:
-    driver: bridge
-    # 若报 Pool overlaps：与本机其它 Docker 网络冲突，请整体改 subnet 并同步 coturn 里 external-ip/relay-ip 的内网段
-    ipam:
-      config:
-        - subnet: 172.30.42.0/24
+name: remote-control-server-deprecated
 
-services:
-
-  coturn:
-    image: coturn/coturn:4.5.2
-    container_name: coturn
-    restart: always
-    user: root
-    networks:
-      turn_net:
-        ipv4_address: 172.30.42.2
-    ports:
-      - "3478:3478/tcp"
-      - "3478:3478/udp"
-      - "50000-50100:50000-50100/udp"
-      - "50000-50100:50000-50100/tcp"
-    volumes:
-      - ./coturn/config/turnserver.conf:/etc/turnserver.conf
-      - ./coturn/turndb:/var/lib/turn/turndb
-      - ./coturn/log:/var/log
-      - ./coturn/run:/var/run/coturn
-
-  signaling:
-    build: ./signaling-server
-    container_name: signaling
-    restart: unless-stopped
-    networks:
-      turn_net:
-        ipv4_address: 172.30.42.3
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./signaling-server/path/to:/app/path/to
-    environment:
-      - NODE_ENV=production
-      - PORT=8080
-      - SSL_KEY_PATH=./path/to/10.10.10.130-key.pem
-      - SSL_CERT_PATH=./path/to/10.10.10.130.pem
+services: {}

@@ -1,0 +1,51 @@
+# 历史一体编排（已迁移至 signaling-server / turnserver 独立 docker-compose）
+# 仅作参考，请勿在本目录 docker compose up
+#
+# 迁移说明见 ../signaling-server/docker-compose.yml
+#              ../turnserver/docker-compose.yml
+
+version: '3'
+
+networks:
+  turn_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.42.0/24
+
+services:
+  coturn:
+    image: coturn/coturn:4.5.2
+    container_name: coturn
+    restart: always
+    user: root
+    networks:
+      turn_net:
+        ipv4_address: 172.30.42.2
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "50000-50100:50000-50100/udp"
+      - "50000-50100:50000-50100/tcp"
+    volumes:
+      - ./coturn/config/turnserver.conf:/etc/turnserver.conf
+      - ./coturn/turndb:/var/lib/turn/turndb
+      - ./coturn/log:/var/log
+      - ./coturn/run:/var/run/coturn
+
+  signaling:
+    build: ./signaling-server
+    container_name: signaling
+    restart: unless-stopped
+    networks:
+      turn_net:
+        ipv4_address: 172.30.42.3
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./signaling-server/path/to:/app/path/to
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - SSL_KEY_PATH=./path/to/10.10.10.130-key.pem
+      - SSL_CERT_PATH=./path/to/10.10.10.130.pem

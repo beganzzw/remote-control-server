@@ -19,34 +19,59 @@ Electron 客户端
 ## 目录结构
 
 ```
-remote-control/
-├── docker-compose.yml          # 统一编排（coturn + signaling）
-├── gen-cert.sh                 # 一键生成自签名证书
-├── signaling-config.js         # Electron 端信令地址配置
-├── electron-main-patch.js      # Electron 主进程证书信任补丁
-├── coturn/
-│   ├── config/turnserver.conf  # Coturn 配置
-│   ├── turndb/                 # 数据库（自动创建）
-│   ├── log/                    # 日志（自动创建）
-│   └── run/                    # PID 文件（自动创建）
-└── signaling-server/
-    ├── Dockerfile
-    ├── package.json
-    ├── server.js
-    ├── config.js
-    ├── core/
-    │   ├── host-handler.js
-    │   ├── client-handler.js
-    │   ├── session-manager.js
-    │   └── signaling-handler.js
-    └── path/to/                # SSL 证书（由 gen-cert.sh 生成）
-        ├── 10.10.10.130.pem
-        └── 10.10.10.130-key.pem
+remote-control-server/          # Electron 被控端 + 历史编排参考
+├── docker-compose.legacy.yml   # 历史一体编排（已废弃，仅参考）
+├── electron/                   # Electron 被控端
+└── ...
+
+signaling-server/               # 信令服务（独立 Docker 部署）
+├── docker-compose.yml
+└── path/to/*.pem
+
+turnserver/                     # TURN 服务（独立 Docker 部署）
+├── docker-compose.yml
+└── config/turnserver.conf
 ```
 
-## 部署步骤
+## 部署步骤（信令 + TURN）
 
-### 1. 生成 SSL 证书
+信令与 TURN **已迁移至独立项目**，请勿在本目录 `docker compose up`。
+
+### 1. 启动 TURN
+
+```bash
+cd ../turnserver
+mkdir -p turndb log run
+docker compose up -d
+docker compose logs -f coturn
+```
+
+### 2. 启动信令
+
+证书已置于 `signaling-server/path/to/10.10.10.130*.pem`（或由 `gen-cert.sh` 生成后复制过去）。
+
+```bash
+cd ../signaling-server
+docker compose up -d --build
+docker compose logs -f signaling-server
+```
+
+### 3. 验证
+
+```bash
+curl -k https://10.10.10.130:8080
+docker ps --filter name=coturn --filter name=signaling
+```
+
+### 历史一体部署
+
+旧版 `remote-control-server/docker-compose.yml` 一体编排见 `docker-compose.legacy.yml`，仅作参考。
+
+---
+
+## Electron 被控端（本目录）
+
+### 生成 SSL 证书（可选，信令 Docker 已自带证书时可跳过）
 
 ```bash
 bash gen-cert.sh
@@ -54,42 +79,21 @@ bash gen-cert.sh
 
 （Windows 使用 Git Bash 时，旧版脚本若用 `-subj "/CN=..."` 可能被 MSYS 转成错误路径并报 `subject name is expected`；当前脚本已改为通过 OpenSSL 配置文件生成，可避免该问题。）
 
-生成后确认文件存在：
-```bash
-ls signaling-server/path/to/
-# 10.10.10.130.pem  10.10.10.130-key.pem
-```
+生成后可将证书复制到 `../signaling-server/path/to/`。
 
-### 2. 创建必要目录
+---
+
+## 旧版「在本目录 docker-compose up」步骤（已废弃）
+
+<details>
+<summary>展开历史步骤</summary>
 
 ```bash
 mkdir -p coturn/turndb coturn/log coturn/run
+docker-compose -f docker-compose.legacy.yml up -d --build
 ```
 
-### 3. 启动所有服务
-
-```bash
-docker-compose up -d --build
-```
-
-### 4. 验证服务
-
-```bash
-# 验证信令服务（应返回"远程控制服务器运行中"）
-curl -k https://10.10.10.130:8080
-
-# 验证 TURN 服务
-turnutils_uclient -u user -w password -p 3478 10.10.10.130
-
-# 查看实时日志
-docker-compose logs -f signaling
-docker-compose logs -f coturn
-```
-
-### 5. Electron 端配置
-
-将 `signaling-config.js` 放入 Electron 项目根目录，
-并将 `electron-main-patch.js` 中的代码添加到主进程 `main.js`。
+</details>
 
 ## Windows 安装包（Electron）
 
@@ -127,17 +131,13 @@ npm run dist-win
 ## 常用命令
 
 ```bash
-# 重启信令服务
-docker-compose restart signaling
+# TURN（turnserver 目录）
+cd ../turnserver && docker compose restart coturn
+cd ../turnserver && docker compose logs -f coturn
 
-# 重启 TURN 服务
-docker-compose restart coturn
-
-# 停止所有服务
-docker-compose down
-
-# 查看端口占用
-docker-compose ps
+# 信令（signaling-server 目录）
+cd ../signaling-server && docker compose restart signaling-server
+cd ../signaling-server && docker compose logs -f signaling-server
 ```
 
 ## 修复记录
@@ -147,8 +147,8 @@ docker-compose ps
 | `connectingClientId` 未初始化导致所有连接被拒 | `host-handler.js` | 在 `handleRegister` 中补全初始化 |
 | 证书 IP 为 `.96` 与服务器 `.130` 不一致 | `config.js` | 更新默认路径并提供证书生成脚本 |
 | 超时计时器未清理旧计时器 | `client-handler.js` | 注册新计时器前先清理同目标旧计时器 |
-| 两个 compose 网络隔离 | `docker-compose.yml` | 合并为统一 compose，固定子网 |
-| TURN relay-ip 可能漂移 | `docker-compose.yml` | 固定容器 IP（当前 `172.30.42.2`，与 `turnserver.conf` 同步） |
+| 两个 compose 网络隔离 | 已迁移独立 compose | 各项目固定 turn_net 子网 |
+| TURN relay-ip 可能漂移 | `turnserver/docker-compose.yml` | 固定容器 IP `172.30.42.2` |
 | `no-stdout-log` 导致 docker logs 为空 | `turnserver.conf` | 移除该配置项 |
 | 嵌套 volume 挂载冲突 | `docker-compose.yml` | PID 路径改为 `/var/run/coturn` 独立挂载 |
 | `cli-password=$()` 不会执行 | `turnserver.conf` | 移除该行（CLI 管理非必须） |
